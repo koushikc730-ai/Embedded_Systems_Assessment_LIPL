@@ -1,0 +1,150 @@
+#include <stdio.h>
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+
+// --- define the data structure ---
+typedef struct {
+    uint8_t dataID;
+    int32_t dataValue;
+} Data_t;
+
+// --- global handles and definitions ---
+#define TASK_STACK_SIZE 2048 // Stack size for our tasks (in words)
+
+QueueHandle_t Queue1;       // handle for our queue
+TaskHandle_t TaskHandle_1;  // handle for ExampleTask1
+TaskHandle_t TaskHandle_2;  // handle for ExampleTask2
+
+// --- task prototypes ---
+// declaring our task functions before we use them.
+void ExampleTask1(void *pvParameters);
+void ExampleTask2(void *pvParameters);
+
+// --- main application entry point ---
+void app_main(void) { 
+    printf("--- FreeRTOS Demo ---\n");
+
+    // create the queue to hold 5 items of type Data_t
+    Queue1 = xQueueCreate(5, sizeof(Data_t));
+
+    if (Queue1 == NULL) {
+        printf("could not create the queue.\n");
+        return;
+    }
+    printf("queue created successfully.\n");
+
+    // create ExampleTask1 
+    xTaskCreate(ExampleTask1,       // task function
+                "SenderTask",       // name of the task
+                TASK_STACK_SIZE,    // stack size
+                NULL,               // parameter to pass to the task
+                1,                  // priority
+                &TaskHandle_1);     // task handle
+
+    // create ExampleTask2 
+    xTaskCreate(ExampleTask2,       // task function
+                "ReceiverTask",     // name of the task
+                TASK_STACK_SIZE,    // stack size
+                NULL,               // parameter to pass to the task
+                2,                  // priority 
+                &TaskHandle_2);     // task handle
+    
+    printf("tasks created successfully. Starting demo...\n");
+}
+
+
+// --- implementation of ExampleTask1 ---
+void ExampleTask1(void *pvParameters) {
+    Data_t dataToSend;
+    int testCase = 0;
+
+    for (;;) { 
+      
+        printf("\n[Task 1] Sending a new test case...\n");
+        switch(testCase) {
+            case 0: // Normal processing
+                dataToSend.dataID = 1; dataToSend.dataValue = 99;
+                break;
+            case 1: // condition to increase priority
+                dataToSend.dataID = 1; dataToSend.dataValue = 0;
+                break;
+            case 2: // normal processing again (to show priority is high)
+                dataToSend.dataID = 1; dataToSend.dataValue = 88;
+                break;
+            case 3: // condition to decrease priority
+                dataToSend.dataID = 1; dataToSend.dataValue = 1;
+                break;
+            case 4: // condition to delete Task2 via dataValue
+                dataToSend.dataID = 1; dataToSend.dataValue = 2;
+                break;
+            case 5: // this will never be received if Task2 is deleted
+                dataToSend.dataID = 0; dataToSend.dataValue = 0;
+                break;
+        }
+
+        printf("[Task 1] Sending -> ID: %u, Value: %d\n", dataToSend.dataID, dataToSend.dataValue);
+
+        // send the data to the queue and wait if the queue is full.
+        xQueueSend(Queue1, &dataToSend, portMAX_DELAY);
+
+        testCase++;
+        if (testCase > 5) {
+            printf("[Task 1] All test cases sent. Suspending ExampleTask1.\n");
+            vTaskSuspend(NULL); // suspend this task after all tests
+        }
+
+        // wait for 500ms before sending the next piece of data
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
+
+// --- implementation of ExampleTask2 ---
+void ExampleTask2(void *pvParameters) {
+    Data_t receivedData;
+    UBaseType_t originalPriority;
+    bool isPriorityIncreased = false;
+
+    // get and store the original priority of this task
+    originalPriority = uxTaskPriorityGet(NULL);
+    printf("[Task 2] My original priority is %lu\n", originalPriority);
+
+    for (;;) {
+        
+        // wait until a message arrives in the queue.
+        if (xQueueReceive(Queue1, &receivedData, portMAX_DELAY) == pdPASS) {
+
+            printf("[Task 2] Received <- ID: %u, Value: %d\n", receivedData.dataID, receivedData.dataValue);
+
+            if (receivedData.dataID == 0) {
+                printf("[Task 2] ACTION: dataID is 0. Deleting ExampleTask2\n");
+                vTaskDelete(NULL);
+            } 
+            else if (receivedData.dataID == 1) {
+                printf("[Task 2] INFO: dataID is 1. Proceeding to check dataValue.\n");
+            }
+
+            if (receivedData.dataValue == 0) {
+                printf("[Task 2] ACTION: dataValue is 0. Increasing ExampleTask2 priority.\n");
+                vTaskPrioritySet(NULL, originalPriority + 2);
+                isPriorityIncreased = true;
+                printf("[Task 2] ExampleTask2 new priority is %lu\n", uxTaskPriorityGet(NULL));
+            } 
+            else if (receivedData.dataValue == 1) {
+                if (isPriorityIncreased) {
+                    printf("[Task 2] ACTION: dataValue is 1 and priority was high. Resetting priority.\n");
+                    vTaskPrioritySet(NULL, originalPriority);
+                    isPriorityIncreased = false;
+                    printf("[Task 2] ExampleTask2 priority is back to %lu\n", uxTaskPriorityGet(NULL));
+                } else {
+                    printf("[Task 2] INFO: dataValue is 1, but priority wasn't increased so action needed.\n");
+                }
+            } 
+            else if (receivedData.dataValue == 2) {
+                printf("[Task 2] ACTION: dataValue is 2. Deleting ExampleTask2\n");
+                vTaskDelete(NULL); 
+            }
+        }
+    }
+}
